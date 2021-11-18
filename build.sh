@@ -35,10 +35,13 @@ function error(){
     [[ ${LOG} -gt 1 ]] && echo -e "\033[41;1mEROR:\033[0m $@"
 }
 
-command -v apt-get > /dev/null 2>&1 && sudo apt-get install -y lsb-release
-(command -v dnf > /dev/null 2>&1 && sudo dnf install -y redhat-lsb-core) || (command -v yum > /dev/null 2>&1 && sudo yum install -y redhat-lsb-core)
-command -v pacman > /dev/null 2>&1 && sudo pacman -S --needed lsb-release
-# The least requirement, we use lsb-release to check your distribution.
+if [[ $(command -v lsb_release > /dev/null 2>&1) -eq 0 ]]
+then
+    command -v apt-get > /dev/null 2>&1 && sudo apt-get install -y lsb-release
+    (command -v dnf > /dev/null 2>&1 && sudo dnf install -y redhat-lsb-core) || (command -v yum > /dev/null 2>&1 && sudo yum install -y redhat-lsb-core)
+    command -v pacman > /dev/null 2>&1 && sudo pacman -S --needed lsb-release
+    # The least requirement, we use lsb-release to check your distribution.
+fi
 ROOT=${PWD}
 USE_ARIA2C=0
 CURRENT_ARCH=$(uname -m)
