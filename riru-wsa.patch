@@ -1,0 +1,19 @@
+diff --git a/rirud/src/main/java/riru/Daemon.java b/rirud/src/main/java/riru/Daemon.java
+index 02f7584..2c4bf72 100644
+--- a/rirud/src/main/java/riru/Daemon.java
++++ b/rirud/src/main/java/riru/Daemon.java
+@@ -68,12 +68,12 @@ public class Daemon implements IBinder.DeathRecipient {
+             allowRestart = false;
+             handler.post(() -> {
+                 Log.w(TAG, "Restarting zygote...");
+-                if (DaemonUtils.has64Bit() && DaemonUtils.has32Bit()) {
++/*                 if (DaemonUtils.has64Bit() && DaemonUtils.has32Bit()) {
+                     // Only devices with both 32-bit and 64-bit support have zygote_secondary
+                     SystemProperties.set("ctl.restart", "zygote_secondary");
+                 } else {
+                     SystemProperties.set("ctl.restart", "zygote");
+-                }
++                } */
+             });
+             return;
+         } else {
