@@ -17,3 +17,7 @@ Install requirements listed in script, prepare a good network connection and eno
 ## Why create this script?
 
 The original plan to use Magisk on WSA is from [LSPosed](https://github.com/LSPosed/MagiskOnWSA), I just do all the thing in a shell script.
+
+## About localized WSA Setting App
+
+[Here](https://github.com/LSPosed/MagiskOnWSA/issues/61) you can find a way to merge localization content into side-load folder, but this requires Windows environment so it is hard to operate on Linux. 
