@@ -334,12 +334,12 @@ then
     cd ${ROOT}/src/wine
     export WINEPREFIX=${ROOT}/src/wine-prefixes
     export WINE=wine64
-    if command -v winetricks > /dev/null 2>&1
+    if ! command -v winetricks > /dev/null 2>&1
     then
+        info 'Getting winetricks from GitHub...'
         try_get_files https://github.com/Winetricks/winetricks/raw/master/src/winetricks ${ROOT}/src/wine/winetricks
         chmod +x ${ROOT}/src/wine/winetricks
         WINETRICKS=${ROOT}/src/wine/winetricks
-        info 'Getting winetricks from GitHub...'
     else
         WINETRICKS=winetricks
         info 'Using existing winetricks...'
