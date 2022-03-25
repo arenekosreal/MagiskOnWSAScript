@@ -20,4 +20,5 @@ The original plan to use Magisk on WSA is from [LSPosed](https://github.com/LSPo
 
 ## About localized WSA Setting App
 
-[Here](https://github.com/LSPosed/MagiskOnWSA/issues/61) you can find a way to merge localization content into side-load folder, but this requires Windows environment so it is hard to operate on Linux. 
+~~At [here](https://github.com/LSPosed/MagiskOnWSA/issues/61) you can find a way to merge localization content into side-load folder, but this requires Windows environment so it is hard to operate on Linux.~~  
+Now we are doing the same as LSPosed, we are using wine/wine64 to merge localized contents if we detected that you have installed wine/wine64. Only wine64 is needed but we think you may need to install whole wine on most Distributions. Thanks LSPosed again for what they have done for using Magisk on WSA.
