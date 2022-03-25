@@ -2,18 +2,24 @@
 
 # Automatically build WSA with root and Magisk
 # There will be two root providers: Kernel-assisted and Magisk. We mainly use Magisk root and let Kernel-assisted root as a backup.
-# Requirements:
-# sudo coreutils jq sed git grep unzip curl bc binutils-aarch64-linux-gnu bison gcc g++ make llvm lld clang ca-certificates cpio flex gcc-aarch64-linux-gnu gnupg libelf libncures libssl lsb-release jdk11 python3 e2fsprogs
+# Requirements (May not all needed):
+#   sudo coreutils jq sed git grep unzip curl bc binutils-aarch64-linux-gnu bison gcc g++ make llvm lld clang ca-certificates cpio flex gcc-aarch64-linux-gnu gnupg 
+#   libelf libncures libssl lsb-release jdk11 python3 e2fsprogs qemu-utils python3-distutils patchelf
 # Optional Requirement(s): 
-# aria2: for improved downloading
+#   aria2: for improved downloading
+#   wine/wine64: for merging localized contents
+#   cabextract: if you use wine to merge localized contents
+#   winetricks: if you use wine to merge localized contents
 # Sometimes you may use proxy to connect in someplace. If you meet network problems, you can download files with other dowloader and place file with correct name and at valid place.
 # You can set ${ANDROID_SDK_ROOT} to use existing Android SDK.
 
 # Code source: https://github.com/LSPosed/MagiskOnWSA and https://github.com/KiruyaMomochi/wsa-kernel-build
 
+set -e
+
 TARGET_ARCH=x86_64
 # Target architecture, x86_64 or arm64
-WSA_POS=15699
+WSA_POS=16709
 # Position of WSA Kernel in JSON, if outdated, this script can fix it automatically.
 LOG=5
 # Log level, from 1 to 5 to get more and more details.
@@ -21,6 +27,10 @@ AUTO_CLEAN=0
 # Auto remove src and out dir when start script, set it to 0 to disable.
 INSTALL_REQS=0
 # Auto install requirements, 1 to enable and 0 to disable.
+CMDLINETOOLS_BUILD=8092744
+# Build number of cmdline-tools, get upgrade at https://developer.android.com/studio#command-tools
+LOCALIZED_CONTENTS=1
+# Enable/Disable localized contents.
 
 function debug(){
     [[ ${LOG} -gt 4 ]] && echo -e "\033[47;30mDEBG:\033[0m $@"
@@ -35,7 +45,55 @@ function error(){
     [[ ${LOG} -gt 1 ]] && echo -e "\033[41;1mEROR:\033[0m $@"
 }
 
-if [[ $(command -v lsb_release > /dev/null 2>&1) -eq 0 ]]
+function get_magisk(){
+    MAGISK_ARCH=$1
+    TARGET_PATH=$2
+    mkdir ${TARGET_PATH}
+    cp ${ROOT}/out/Magisk/app-release.apk.unpacked/lib/${MAGISK_ARCH}/libmagisk64.so ${TARGET_PATH}/magisk64 || \
+        (cp ${ROOT}/out/Magisk/app-release.apk.unpacked/lib/${MAGISK_ARCH}/libmagisk32.so ${TARGET_PATH}/magisk32 && warn 'Are you going to use 32 bit Magisk?')
+    cp ${ROOT}/out/Magisk/app-release.apk.unpacked/lib/${MAGISK_ARCH}/libmagiskinit.so ${TARGET_PATH}/magiskinit
+    cp ${ROOT}/out/Magisk/app-release.apk.unpacked/lib/${MAGISK_ARCH}/libmagiskboot.so ${TARGET_PATH}/magiskboot
+    cp ${ROOT}/out/Magisk/app-release.apk.unpacked/lib/${MAGISK_ARCH}/libbusybox.so ${TARGET_PATH}/busybox
+    if [[ ${MAGISK_ARCH} == 'arm64-v8a' ]]
+    then
+        cp ${ROOT}/out/Magisk/app-release.apk.unpacked/lib/armeabi-v7a/libmagisk32.so ${TARGET_PATH}/magisk32
+    elif [[ ${MAGISK_ARCH} == 'x86_64' ]]
+    then
+        cp ${ROOT}/out/Magisk/app-release.apk.unpacked/lib/x86/libmagisk32.so ${TARGET_PATH}/magisk32
+    fi
+    if [[ -f ${ROOT}/out/Magisk/app-release.apk.unpacked/lib/${MAGISK_ARCH}/libmagiskpolicy.so ]]
+    then
+        cp ${ROOT}/out/Magisk/app-release.apk.unpacked/lib/${MAGISK_ARCH}/libmagiskpolicy.so ${TARGET_PATH}/magiskpolicy
+    else
+        ln -sf magiskinit ${TARGET_PATH}/magiskpolicy
+    fi
+    cp ${ROOT}/out/Magisk/app-release.apk.unpacked/assets/boot_patch.sh ${TARGET_PATH}/boot_patch.sh
+    cp ${ROOT}/out/Magisk/app-release.apk.unpacked/assets/util_functions.sh ${TARGET_PATH}/util_functions.sh
+}
+function get_files(){
+    URL=$1
+    NAME=$2
+    info "Downloading file ${NAME}"
+    debug "Downloading file ${NAME} with URL ${URL}"
+    if [[ ${USE_ARIA2C} -eq 1 ]]
+    then
+        aria2c --no-conf --daemon=false --continue=true --out=${NAME} ${URL}
+    else
+        curl -C -L -o ${NAME} ${URL}
+    fi
+}
+function try_get_files(){
+    URL=$1
+    NAME=$2
+    if [[ -f ${NAME} ]]
+    then
+        warn "File ${NAME} has been downloaded."
+    else
+        get_files ${URL} ${NAME}
+    fi
+}
+
+if ! command -v lsb_release > /dev/null 2>&1
 then
     command -v apt-get > /dev/null 2>&1 && sudo apt-get install -y lsb-release
     (command -v dnf > /dev/null 2>&1 && sudo dnf install -y redhat-lsb-core) || (command -v yum > /dev/null 2>&1 && sudo yum install -y redhat-lsb-core)
@@ -44,8 +102,9 @@ then
 fi
 ROOT=${PWD}
 USE_ARIA2C=0
-CURRENT_ARCH=$(uname -m)
+command -v aria2c > /dev/null 2>&1 && info 'aria2 found, we will use it for better download experience.' && export USE_ARIA2C=1
 DIST=$(lsb_release -is)
+CURRENT_ARCH=$(uname -m)
 case ${CURRENT_ARCH} in
     "aarch64")
         CURRENT_ARCH='arm64-v8a'
@@ -54,8 +113,13 @@ case ${CURRENT_ARCH} in
         CURRENT_ARCH='armeabi-v7a'
         ;;
 esac
-debug "Current arch is ${CURRENT_ARCH}"
-command -v aria2c > /dev/null 2>&1 && info 'aria2 found, we will use it for better download experience.' && export USE_ARIA2C=1
+if [[ ${CURRENT_ARCH} =~ 64 ]]
+then
+    LINKER=linker64
+else
+    LINKER=linker
+fi
+debug "Current arch is ${CURRENT_ARCH}, linker is ${LINKER}"
 if [[ ${INSTALL_REQS} -eq 1 ]]
 then
     info 'Installing Requirements...'
@@ -65,8 +129,9 @@ then
         curl -LO https://apt.llvm.org/llvm.sh && bash llvm.sh ${LLVM_VER} && rm llvm.sh
         sudo apt-get upgrade && sudo apt-get install -y \
             bc binutils-aarch64-linux-gnu bison build-essential ca-certificates cpio flex gcc-aarch64-linux-gnu gnupg libelf-dev libncurses-dev libssl-dev \
-            jq sed git grep unzip curl coreutils openjdk-11-jdk python3 clang-${LLVM_VER} lld-${LLVM_VER} llvm-${LLVM_VER} e2fsprogs
-        for item in llvm-strip llvm-nm llvm-objcopy llvm-objstrip llvm-as llvm-addr2line llvm-ar clang ld.lld
+            jq sed git grep unzip curl coreutils openjdk-11-jdk python3 clang-${LLVM_VER} lld-${LLVM_VER} llvm-${LLVM_VER} e2fsprogs qemu-utils python3-distutils \
+            patchelf
+        for item in llvm-strip llvm-nm llvm-objcopy llvm-objdump llvm-objstrip llvm-as llvm-addr2line llvm-ar clang ld.lld
         do
             if [[ ${item} == clang ]]
             then
@@ -85,12 +150,13 @@ then
         [[ ${DIST} =~ RedHat.* ]] && warn 'You are using RedHat and may see some packages missing, you have to fix them manually.'
         sudo ${PKM} install -y \
             bc bison ca-certificates cpio flex gcc-c++-aarch64-linux-gnu gnupg elfutils-libelf-devel ncurses-devel openssl-devel clang llvm lld \
-            jq sed git grep unzip curl coreutils java-11-openjdk-devel python3 e2fsprogs && sudo ${PKM} groupinstall -y "Development Tools" "Development Libraries"
+            jq sed git grep unzip curl coreutils java-11-openjdk-devel python3 e2fsprogs qemu patchelf && \
+            sudo ${PKM} groupinstall -y "Development Tools" "Development Libraries"
         ;;
     "Arch")
         sudo pacman -S --needed \
             bc aarch64-linux-gnu-binutils bison base-devel ca-certificates cpio flex aarch64-linux-gnu-gcc gnupg libelf ncurses openssl jq sed git grep \
-            unzip curl coreutils jdk11-openjdk python e2fsprogs clang llvm lld
+            unzip curl coreutils jdk11-openjdk python e2fsprogs clang llvm lld qemu patchelf
         ;;
         # TODO: Fix Package name and extra operation(s) in non-Arch dists because I am not using them and I am not sure if these names and operations are right...
     "*")
@@ -98,7 +164,8 @@ then
         ;;
     esac
 fi
-[[ ${AUTO_CLEAN} -eq 1 ]] && [[ -d out ]] && rm -rf out && [[ -d src ]] && rm -rf src
+[[ ${AUTO_CLEAN} -eq 1 ]] && [[ -d src ]] && rm -rf src
+[[ -d out ]] && rm -rf out
 mkdir -p src
 mkdir -p out/target/${TARGET_ARCH}
 [[ -z ${ANDROID_SDK_ROOT} ]] && export ANDROID_SDK_ROOT=${ROOT}/src/AndroidSDK && warn "You do not have \${ANDROID_SDK_ROOT} set, we will use ${ANDROID_SDK_ROOT} as default"
@@ -106,6 +173,21 @@ export ANDROID_SDK_HOME=${ANDROID_SDK_ROOT}
 mkdir -p ${ANDROID_SDK_ROOT}
 java --version | grep -q 'openjdk 11' || warn 'You may not set jdk 11 in ${PATH}, we may meet problems when building.'
 cd src
+info 'Getting libraries to patch magiskpolicy...'
+mkdir -p linker/${CURRENT_ARCH}
+if [[ ${CURRENT_ARCH} == 'x86_64' ]]
+then
+    for file in linker64 libc.so libdl.so libm.so
+    do
+        try_get_files https://github.com/LSPosed/MagiskOnWSA/raw/main/linker/${file} ${ROOT}/src/linker/${CURRENT_ARCH}/${file}
+        if [[ ${file} == 'linker64' ]]
+        then
+            chmod +x ${ROOT}/src/linker/${CURRENT_ARCH}/${file}
+        fi
+    done
+else
+    error "No supported files to patch magiskpolicy, you need to get linker/linker64, libc.so, libdl.so, libm.so yourself and put them at ${ROOT}/src/linker/${CURRENT_ARCH}"
+fi
 info 'Getting WSA Kernel Sources...'
 if [[ ! -f WSA-Linux-Kernel.zip ]]
 then
@@ -142,12 +224,7 @@ then
         exit 1
     else
         info "Getting WSA-Linux-Kernel.zip with URL ${url}"
-        if [[ ${USE_ARIA2C} -eq 1 ]]
-        then
-            aria2c --no-conf --daemon=false --continue=true --out=WSA-Linux-Kernel.zip ${url}
-        else
-            curl -L -C ${url} -o WSA-Linux-Kernel.zip
-        fi
+        get_files ${url} WSA-Linux-Kernel.zip
     fi
 else
     info 'Kernel source has been downloaded.'
@@ -159,31 +236,17 @@ git clone --depth=1 --recurse-submodules https://github.com/topjohnwu/Magisk || 
 info 'Getting Riru Magisk module source...'
 git clone --depth=1 https://github.com/RikkaApps/Riru || warn 'There seems that folder Riru already exists, we skip cloning.'
 info 'Getting .msix file...'
-if [[ ! -f WSA.msixbundle ]]
+if [[ ! -f ${ROOT}/src/WSA.msixbundle ]]
 then
-    mainpack=$(curl -d "type=url&url=https://www.microsoft.com/p/windows-subsystem-for-android/9p3395vx91nr&ring=WIS&lang=zh-CN" -X POST "https://store.rg-adguard.net/api/GetFiles" | \
+    mainpack=$(curl -s -d "type=url&url=https://www.microsoft.com/p/windows-subsystem-for-android/9p3395vx91nr&ring=WIS&lang=en-US" -X POST "https://store.rg-adguard.net/api/GetFiles" | \
             awk '/<table class="tftable" border="1" align="center">/, /<\/table>/' | sed '/<\/table><script type="text\/javascript">/d;/<table class="tftable" border="1" align="center">/d' | \
             awk 'NR>5' | sed '/<\/tr><\/thead>/d;/^$/d' | tail -n 1)
     packurl=$(echo ${mainpack} | grep -o '<a href=".*" rel' | sed 's/<a href="//;s/" rel//')
-    debug "Use ${packurl} to get WSA.msixbundle"
-    if [[ ${USE_ARIA2C} -eq 1 ]]
-    then
-        aria2c --no-conf --daemon=false --continue=true --out=WSA.msixbundle ${packurl}
-    else
-        curl -C -L ${packurl} -o WSA.msixbundle
-    fi
-else
-    info "WSA.msixbundle has been downloaded."
+    try_get_files ${packurl} ${ROOT}/src/WSA.msixbundle
 fi
 if [[ ! -d ${ANDROID_SDK_ROOT}/cmdline-tools/latest ]]
 then
-    info 'Bootstrapping cmdline tools...'
-    if [[ ${USE_ARIA2C} -eq 1 ]]
-    then
-        aria2c --no-conf --daemon=false --continue=true --out=cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-7583922_latest.zip
-    else
-        curl -L -C -o cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-7583922_latest.zip
-    fi
+    try_get_files https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINETOOLS_BUILD}_latest.zip ${ROOT}/src/cmdline-tools.zip
     info 'Unpacking cmdline-tools...'
     mkdir -p ${ANDROID_SDK_ROOT}/cmdline-tools/temp
     unzip -q -o 'cmdline-tools.zip' -d ${ANDROID_SDK_ROOT}/cmdline-tools/temp
@@ -200,10 +263,8 @@ fi
 info 'Unpacking Kernel source...'
 unzip -q -o 'WSA-Linux-Kernel.zip' -d ${PWD}
 cd WSA-Linux-Kernel
-KVER=$(make kernelversion | cut -d . -f 1,2)
 info 'Patching Kernel...'
 cd ${ROOT}/src/WSA-Kernel-SU
-git apply ${ROOT}/Kconfig.patch
 KERNEL_BASE=${ROOT}/src/WSA-Linux-Kernel/drivers/base
 SU_BASE=${ROOT}/src/WSA-Kernel-SU/drivers/base/superuser
 grep -q ASSISTED_SUPERUSER ${KERNEL_BASE}/Kconfig || cat ${SU_BASE}/Kconfig >> ${KERNEL_BASE}/Kconfig
@@ -213,26 +274,26 @@ info 'Compiling Kernel...'
 cd ${ROOT}/src/WSA-Linux-Kernel
 case ${TARGET_ARCH} in
     "arm64")
-        cp configs/wsa/config-wsa-arm64-${KVER} .config
+        cp configs/arm64/kernel_defconfig .config
         export CROSS_COMPILE=aarch64-linux-gnu-
         export ARCH=arm64
         ;;
     "x86_64")
-        cp configs/wsa/config-wsa-${KVER} .config
+        cp configs/x86/kernel_defconfig .config
         ;;
     "*")
         warn 'Invalid Target architecture, We will use x86_64 as default.'
-        cp configs/wsa/config-wsa-${KVER} .config
+        cp configs/x86/kernel_defconfig .config
         ;;
 esac
 sed -i "s/CONFIG_LOCALVERSION=\"-windows-subsystem-for-android\"/CONFIG_LOCALVERSION=\"-wsa-root\"/" .config
 grep -q CONFIG_ASSISTED_SUPERUSER .config || sed -i "1i CONFIG_ASSISTED_SUPERUSER=y" .config
 export LLVM=1
-yes | make oldconfig
+make olddefconfig
 make bzImage -j$(nproc)
 info 'Unpacking .msix file'
 cd ${ROOT}/src
-unzip -o WSA.msixbundle -d ${ROOT}/src/WSA-Package
+unzip -o -d ${ROOT}/src/WSA-Package WSA.msixbundle
 cd WSA-Package
 if [[ ${TARGET_ARCH} = "arm64" ]]
 then
@@ -245,6 +306,58 @@ else
     MAGISK_ARCH=x86_64
 fi
 unzip -q -o ${pack} -d ${ROOT}/out/WSA-Deploy
+mkdir -p ${ROOT}/src/lang/pri ${ROOT}/src/lang/xml ${ROOT}/src/WSA-Package/lang
+for langfile in $(ls *language*)
+do 
+    lang=$(echo ${langfile} | cut -d . -f 4 | cut -d _ -f 2 | sed s/language-//)
+    mkdir -p lang/${lang}
+    unzip -o -d lang/${lang} ${langfile}
+    cp lang/${lang}/resources.pri ${ROOT}/src/lang/pri/${lang}.pri
+    cp lang/${lang}/AppxManifest.xml ${ROOT}/src/lang/xml/${lang}.xml
+done
+cd ${ROOT}/src/lang
+cp ${ROOT}/out/WSA-Deploy/resources.pri ${ROOT}/src/lang/pri/en-us.pri
+cp ${ROOT}/out/WSA-Deploy/AppxManifest.xml ${ROOT}/src/lang/xml/en-us.xml
+tee priconfig.xml <<EOF
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<resources targetOsVersion="10.0.0" majorVersion="1">
+    <index root="\" startIndexAt="\">
+        <indexer-config type="folder" foldernameAsQualifier="true" filenameAsQualifier="true" qualifierDelimiter="."/>
+        <indexer-config type="PRI"/>
+    </index>
+</resources>
+EOF
+if [[ ${LOCALIZED_CONTENTS} -eq 1 ]] && command -v wine64 > /dev/null 2>&1
+then
+    info 'Wine64 detected, merging localized contents...'
+    mkdir -p ${ROOT}/src/wine ${ROOT}/src/wine-prefixes 
+    cd ${ROOT}/src/wine
+    export WINEPREFIX=${ROOT}/src/wine-prefixes
+    export WINE=wine64
+    if command -v winetricks > /dev/null 2>&1
+    then
+        try_get_files https://github.com/Winetricks/winetricks/raw/master/src/winetricks ${ROOT}/src/wine/winetricks
+        chmod +x ${ROOT}/src/wine/winetricks
+        WINETRICKS=${ROOT}/src/wine/winetricks
+        info 'Getting winetricks from GitHub...'
+    else
+        WINETRICKS=winetricks
+        info 'Using existing winetricks...'
+    fi
+    try_get_files https://github.com/LSPosed/MagiskOnWSA/raw/main/wine/makepri.exe ${ROOT}/src/wine/makepri.exe
+    cd ${ROOT}/src/lang
+    if [[ ! -f ${ROOT}/src/lang/resources.pri ]]
+    then
+        ${WINETRICKS} msxml6
+        wine64 ${ROOT}/src/wine/makepri.exe new /pr pri /in MicrosoftCorporationII.WindowsSubsystemForAndroid /cf priconfig.xml /of resources.pri /o
+    else
+        warn "File ${ROOT}/lang/resources.pri found, we use this existing one instead generate ourself."
+    fi
+    cp ${ROOT}/out/WSA-Deploy/AppxManifest.xml AppxManifest.xml
+    sed -i -zE "s/<Resources.*Resources>/<Resources>\n$(cat xml/* | grep -Po '<Resource [^>]*/>' | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\$/\\$/g' | sed 's/\//\\\//g')\n<\/Resources>/g" AppxManifest.xml
+    cp resources.pri ${ROOT}/out/WSA-Deploy/resources.pri
+    cp AppxManifest.xml ${ROOT}/out/WSA-Deploy/AppxManifest.xml
+fi
 cd ${ROOT}/out/WSA-Deploy
 rm -rf '[Content_Types].xml' 'AppxBlockMap.xml' 'AppxSignature.p7x' 'AppxMetadata'
 cp ${kernel} 'Tools/kernel'
@@ -252,18 +365,15 @@ cd ${ROOT}/src
 info 'WSA with root support build successful!'
 cd Magisk
 info 'Patching Magisk...'
-git apply ${ROOT}/magisk-wsa.patch
+git apply ${ROOT}/magisk-wsa.patch || warn 'Patch Magisk failed. This may because the patch has been applied.'
 info 'Building Magisk...'
 [[ ! -d ${ANDROID_SDK_ROOT}/ndk/magisk ]] && python3 build.py -v ndk
-python3 build.py -v stub
-python3 build.py -v emulator
+python3 build.py -vr all
 mkdir -p ${ROOT}/out/Magisk
-cp scripts/emulator.sh ${ROOT}/out/Magisk/emulator.sh
-cp out/app-debug.apk ${ROOT}/out/Magisk/app-debug.apk
-cp native/out/${MAGISK_ARCH}/busybox ${ROOT}/out/Magisk/busybox
+cp out/app-release.apk ${ROOT}/out/Magisk/app-release.apk
 info 'Patching Riru Magisk module...'
 cd ${ROOT}/src/Riru
-git apply ${ROOT}/riru-wsa.patch
+git apply ${ROOT}/riru-wsa.patch || warn 'Patch Riru failed. This may because the patch has been applied.'
 info 'Building Riru Magisk module...'
 rm -rf out
 bash -c './gradlew :riru:assembleRelease'
@@ -272,33 +382,92 @@ riru_zip=$(ls *.zip)
 cp ${riru_zip} ${ROOT}/out/target/${TARGET_ARCH}
 info 'Generating PowerShell script for deploying in Windows...'
 cat > ${ROOT}/out/target/${TARGET_ARCH}/deploy.ps1 << 'EOF'
-#Requires -RunAsAdministrator
-if ($null -eq (Get-Command "adb" -ErrorAction SilentlyContinue)){
-    Write-Host 'No ADB Executable in \$PATH found.'
-    exit 1
+# Automated Install script by Mioki
+# http://github.com/okibcn
+function Test-Administrator {
+    [OutputType([bool])]
+    param()
+    process {
+        [Security.Principal.WindowsPrincipal]\$user = [Security.Principal.WindowsIdentity]::GetCurrent();
+        return \$user.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator);
+    }
 }
-Add-AppxPackage -Register WSA-Deploy/AppxManifest.xml
-Write-Host 'We need you to start WSA Settings App and enable Developer Mode manually. For more stablility, you can start one app such as File Browser or Amazon Store.'
-Read-Host 'When you are ready, press Enter:'
-adb connect 127.0.0.1:58526
-adb -s 127.0.0.1:58526 install Magisk.apk
-Write-Host 'We need you to start Magisk app installed in your Start Menu, it will remind you to fix Magisk environment and restart WSA.'
-Read-Host 'When WSA restarted (you can start Magisk app again to test), press Enter:'
-adb connect 127.0.0.1:58526
-adb -s 127.0.0.1:58526 push ${riru_zip} /data/local/tmp
-adb -s 127.0.0.1:58526 shell sh su -c 'magisk --install-module /data/local/tmp/${riru_zip}'
-adb -s 127.0.0.1:58526 reboot userspace
-Write-Host 'Deploy Completed and WSA will be restarted again. Now you can download LSPosed module and install to Magisk.'
+function Finish {
+    Clear-Host
+    Start-Process "wsa://com.topjohnwu.magisk"
+    Start-Process "wsa://com.android.vending"
+}
+if (-not (Test-Administrator)) {
+    \$proc = Start-Process -PassThru -WindowStyle Hidden -Verb RunAs powershell.exe -Args "-executionpolicy bypass -command Set-Location '\$PSScriptRoot'; &'\$PSCommandPath' EVAL"
+    \$proc.WaitForExit()
+    if (\$proc.ExitCode -ne 0) {
+        Clear-Host
+        Write-Warning "Failed to launch start as Administrator\`r\`nPress any key to exit"
+        \$null = \$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown');
+    }
+    exit
+}
+elseif ((\$args.Count -eq 1) -and (\$args[0] -eq "EVAL")) {
+    Start-Process powershell.exe -Args "-executionpolicy bypass -command Set-Location '\$PSScriptRoot'; &'\$PSCommandPath'"
+    exit
+}
+reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
+\$VMP = Get-WindowsOptionalFeature -Online -FeatureName 'VirtualMachinePlatform'
+if (\$VMP.State -ne "Enabled") {
+    Enable-WindowsOptionalFeature -Online -NoRestart -FeatureName 'VirtualMachinePlatform'
+    Clear-Host
+    Write-Warning "Need restart to enable virtual machine platform\`r\`nPress y to restart or press any key to exit"
+    \$key = \$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+    If ("y" -eq \$key.Character) {
+        Restart-Computer -Confirm
+    }
+    Else {
+        exit 1
+    }
+}
+Add-AppxPackage -ForceApplicationShutdown -ForceUpdateFromAnyVersion -Path vclibs.appx
+Add-AppxPackage -ForceApplicationShutdown -ForceUpdateFromAnyVersion -Path xaml.appx
+\$Installed = \$null
+\$Installed = Get-AppxPackage -Name 'MicrosoftCorporationII.WindowsSubsystemForAndroid'
+If ((\$null -ne \$Installed) -and (-not (\$Installed.IsDevelopmentMode))) {
+    Clear-Host
+    Write-Warning "There is already one installed WSA. Please uninstall it first.\`r\`nPress y to uninstall existing WSA or press any key to exit"
+    \$key = \$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+    If ("y" -eq \$key.Character) {
+        Remove-AppxPackage -Package \$Installed.PackageFullName
+    }
+    Else {
+        exit 1
+    }
+}
+Clear-Host
+Write-Host "Installing MagiskOnWSA..."
+Stop-Process -Name "wsaclient" -ErrorAction "silentlycontinue"
+Add-AppxPackage -ForceApplicationShutdown -ForceUpdateFromAnyVersion -Register .\WSA-Deploy\AppxManifest.xml
+if (\$?) {
+    Finish
+}
+Elseif (\$null -ne \$Installed) {
+    Clear-Host
+    Write-Host "Failed to update, try to uninstall existing installation while preserving userdata..."
+    Remove-AppxPackage -PreserveApplicationData -Package \$Installed.PackageFullName
+    Add-AppxPackage -ForceApplicationShutdown -ForceUpdateFromAnyVersion -Register .\AppxManifest.xml
+    if (\$?) {
+        Finish
+    }
+}
+Write-Host "All Done\`r\`nPress any key to exit"
+\$null = \$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
 EOF
-sed -i "s/\${riru_zip}/${riru_zip}/g" ${ROOT}/out/target/${TARGET_ARCH}/deploy.ps1
 info 'Intergrating Magisk, this operation also needs root privilege...'
-[[ ${DIST} == "Arch" ]] && warn 'Building on Arch Linux need SELinux enabled to work properly, you can find more at https://wiki.archlinux.org/title/SELinux'
 cd ${ROOT}/out/WSA-Deploy
 cp -a ${ROOT}/out/WSA-Deploy ${ROOT}/out/target/${TARGET_ARCH}
 cp system.img system.img.orig
 cp system_ext.img system_ext.img.orig
 cp vendor.img vendor.img.orig
 cp product.img product.img.orig
+cp userdata.vhdx userdata.vhdx.orig
+qemu-img convert -O raw userdata.vhdx userdata.img
 resize2fs system.img 1024M
 resize2fs product.img 1024M
 resize2fs system_ext.img 108M
@@ -308,40 +477,43 @@ sudo mount -o loop system.img system
 sudo mount -o loop vendor.img system/vendor
 sudo mount -o loop product.img system/product
 sudo mount -o loop system_ext.img system/system_ext
+sudo mount -o loop userdata.img system/data
 sudo mkdir system/sbin
-sudo chcon --reference system/init.environ.rc system/sbin
+sudo chcon --reference system/init.environ.rc system/sbin || \
+    ([[ ${DIST} == "Arch" ]] && warn 'Building on Arch Linux need SELinux enabled to work properly, you can find more at https://wiki.archlinux.org/title/SELinux') || \
+    warn 'Failed to set SELinux context.'
 sudo chown root:root system/sbin
 sudo chmod 0700 system/sbin
 sudo tee -a system/sbin/loadpolicy.sh <<EOF
 #!/system/bin/sh
+restorecon -R /data/adb/magisk
 for module in \$(ls /data/adb/modules); do
     if ! [ -f "/data/adb/modules/\$module/disable" ] && [ -f "/data/adb/modules/\$module/sepolicy.rule" ]; then
         /sbin/magiskpolicy --live --apply "/data/adb/modules/\$module/sepolicy.rule"
     fi
 done
 EOF
-unzip -q -o ${ROOT}/out/Magisk/app-debug.apk -d ${ROOT}/out/Magisk/app-debug.apk.unpacked
-cp ${ROOT}/out/Magisk/app-debug.apk ${ROOT}/out/target/${TARGET_ARCH}/Magisk.apk
-mkdir magisk
-if [[ ${MAGISK_ARCH} == 'arm64-v8a' ]]
-then
-    cp ${ROOT}/out/Magisk/app-debug.apk.unpacked/lib/arm64-v8a/libmagisk64.so magisk/magisk64
-    cp ${ROOT}/out/Magisk/app-debug.apk.unpacked/lib/armeabi-v7a/libmagisk32.so magisk/magisk32
-    cp ${ROOT}/out/Magisk/app-debug.apk.unpacked/lib/arm64-v8a/libmagiskinit.so magisk/magiskinit
-else
-    cp ${ROOT}/out/Magisk/app-debug.apk.unpacked/lib/x86_64/libmagisk64.so magisk/magisk64
-    cp ${ROOT}/out/Magisk/app-debug.apk.unpacked/lib/x86/libmagisk32.so magisk/magisk32
-    cp ${ROOT}/out/Magisk/app-debug.apk.unpacked/lib/x86_64/libmagiskinit.so magisk/magiskinit
-fi
-ln -sf magiskinit magisk/magiskpolicy
-cp ${ROOT}/out/Magisk/app-debug.apk.unpacked/lib/${CURRENT_ARCH}/libmagiskinit.so magiskpolicy
+unzip -q -o ${ROOT}/out/Magisk/app-release.apk -d ${ROOT}/out/Magisk/app-release.apk.unpacked
+cp ${ROOT}/out/Magisk/app-release.apk ${ROOT}/out/target/${TARGET_ARCH}/Magisk.apk
+get_magisk ${MAGISK_ARCH} magisk
+get_magisk ${CURRENT_ARCH} magisk.${CURRENT_ARCH}
 sudo cp magisk/* system/sbin/
+sudo mkdir -p system/data/adb/magisk
+sudo chmod -R 700 system/data/adb
+sudo cp magisk/* system/data/adb/magisk/
+sudo find system/data/adb/magisk -type f -exec chmod 0755 {} \;
+sudo cp ${ROOT}/out/Magisk/app-release.apk system/data/adb/magisk/magisk.apk
 sudo find system/sbin -type f -exec chmod 0755 {} \;
 sudo find system/sbin -type f -exec chown root:root {} \;
-sudo find system/sbin -type f -exec chcon --reference system/product {} \;
-chmod +x magiskpolicy
+sudo find system/sbin -type f -exec chcon --reference system/product {} \; || warn 'Failed to set SELinux context.'
+sudo patchelf --replace-needed libc.so "${ROOT}/src/linker/${CURRENT_ARCH}/libc.so" ./magisk.${CURRENT_ARCH}/magiskpolicy || true
+sudo patchelf --replace-needed libm.so "${ROOT}/src/linker/${CURRENT_ARCH}/libm.so" ./magisk.${CURRENT_ARCH}/magiskpolicy || true
+sudo patchelf --replace-needed libdl.so "${ROOT}/src/linker/${CURRENT_ARCH}/libdl.so" ./magisk.${CURRENT_ARCH}/magiskpolicy || true
+sudo patchelf --set-interpreter "${ROOT}/src/linker/${CURRENT_ARCH}/${LINKER}" ./magisk.${CURRENT_ARCH}/magiskpolicy || true
+chmod +x magisk.${CURRENT_ARCH}/magiskpolicy
 echo '/dev/wsa-magisk(/.*)?    u:object_r:magisk_file:s0' | sudo tee -a system/vendor/etc/selinux/vendor_file_contexts
-sudo ./magiskpolicy --load system/vendor/etc/selinux/precompiled_sepolicy --save system/vendor/etc/selinux/precompiled_sepolicy \
+echo '/data/adb/magisk(/.*)?   u:object_r:magisk_file:s0' | sudo tee -a system/vendor/etc/selinux/vendor_file_contexts
+sudo ./magisk.${CURRENT_ARCH}/magiskpolicy --load system/vendor/etc/selinux/precompiled_sepolicy --save system/vendor/etc/selinux/precompiled_sepolicy \
     --magisk "allow * magisk_file lnk_file *"
 sudo tee -a system/system/etc/init/hw/init.rc <<EOF
 on post-fs-data
@@ -390,15 +562,20 @@ EOF
 sudo umount system/system_ext
 sudo umount system/product
 sudo umount system/vendor
+sudo umount system/data
 sudo umount system
 sudo rm -rf system
-rm -rf ${ROOT}/out/Magisk/app-debug.apk.unpacked
-for file in system.img system_ext.img product.img vendor.img
+qemu-img convert -o subformat=dynamic -f raw -O vhdx userdata.img userdata.vhdx
+rm -rf ${ROOT}/out/Magisk/app-release.apk.unpacked userdata.img magisk magisk.${CURRENT_ARCH}
+for file in system.img system_ext.img product.img vendor.img userdata.vhdx
 do
     cp ${file} ${ROOT}/out/target/${TARGET_ARCH}/WSA-Deploy/${file}
     mv ${file}.orig ${file}
-    e2fsck -yf ${ROOT}/out/target/${TARGET_ARCH}/WSA-Deploy/${file}
-    resize2fs -M ${ROOT}/out/target/${TARGET_ARCH}/WSA-Deploy/${file}
+    if [[ ${file} != userdata.vhdx ]]
+    then
+        e2fsck -yf ${ROOT}/out/target/${TARGET_ARCH}/WSA-Deploy/${file}
+        resize2fs -M ${ROOT}/out/target/${TARGET_ARCH}/WSA-Deploy/${file}
+    fi
 done
 # Recover backup, you can use these ${ROOT}/out/WSA-Deploy folder for installing WSA with only Kernel-assisted su 
 # and deploy Magisk emulator, which is the traditional way to use Magisk on WSA.

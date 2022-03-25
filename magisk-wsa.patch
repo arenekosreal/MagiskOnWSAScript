@@ -1,76 +1,45 @@
 diff --git a/build.py b/build.py
-index 34d32d02..b5d9887a 100755
+index 4cf96de..ad38037 100755
 --- a/build.py
 +++ b/build.py
-@@ -426,9 +426,10 @@ def setup_ndk(args):
-     url = f'https://dl.google.com/android/repository/android-ndk-r{ndk_ver}-{os_name}-x86_64.zip'
+@@ -408,9 +408,10 @@ def setup_ndk(args):
+     url = f'https://dl.google.com/android/repository/android-ndk-r{ndk_ver}-{os_name}.zip'
      ndk_zip = url.split('/')[-1]
  
 -    header(f'* Downloading {ndk_zip}')
 -    with urllib.request.urlopen(url) as response, open(ndk_zip, 'wb') as out_file:
 -        shutil.copyfileobj(response, out_file)
 +    if not os.path.exists(ndk_zip):
-+        header(f'* Downloading {ndk_zip}')
++        header(f'* Downloading {ndk_zip} with URL {url}')
 +        with urllib.request.urlopen(url) as response, open(ndk_zip, 'wb') as out_file:
 +            shutil.copyfileobj(response, out_file)
  
      header('* Extracting NDK zip')
      rm_rf(ndk_path)
-@@ -466,17 +467,17 @@ def setup_avd(args):
-     build_binary(args)
-     build_app(args)
+@@ -449,17 +450,17 @@ def setup_avd(args):
+         build_binary(args)
+         build_app(args)
  
 -    header('* Setting up emulator')
-+    #header('* Setting up emulator')
++    # header('* Setting up emulator')
  
 -    abi = cmd_out([adb_path, 'shell', 'getprop', 'ro.product.cpu.abi'])
 -    proc = execv([adb_path, 'push', f'native/out/{abi}/busybox', 'out/app-debug.apk',
--           'scripts/emulator.sh', '/data/local/tmp'])
+-           'scripts/avd_magisk.sh', '/data/local/tmp'])
 -    if proc.returncode != 0:
 -        error('adb push failed!')
-+    #abi = cmd_out([adb_path, 'shell', 'getprop', 'ro.product.cpu.abi'])
-+    #proc = execv([adb_path, 'push', f'native/out/{abi}/busybox', 'out/app-debug.apk',
-+           #'scripts/emulator.sh', '/data/local/tmp'])
-+    #if proc.returncode != 0:
-+        #error('adb push failed!')
++    # abi = cmd_out([adb_path, 'shell', 'getprop', 'ro.product.cpu.abi'])
++    # proc = execv([adb_path, 'push', f'native/out/{abi}/busybox', 'out/app-debug.apk',
++    #        'scripts/avd_magisk.sh', '/data/local/tmp'])
++    # if proc.returncode != 0:
++    #     error('adb push failed!')
  
--    proc = execv([adb_path, 'shell', 'sh', '/data/local/tmp/emulator.sh'])
+-    proc = execv([adb_path, 'shell', 'sh', '/data/local/tmp/avd_magisk.sh'])
 -    if proc.returncode != 0:
--        error('emulator.sh failed!')
-+    #proc = execv([adb_path, 'shell', 'sh', '/data/local/tmp/emulator.sh'])
-+    #if proc.returncode != 0:
-+        #error('emulator.sh failed!')
+-        error('avd_magisk.sh failed!')
++    # proc = execv([adb_path, 'shell', 'sh', '/data/local/tmp/avd_magisk.sh'])
++    # if proc.returncode != 0:
++    #     error('avd_magisk.sh failed!')
  
  
- def build_all(args):
-diff --git a/scripts/emulator.sh b/scripts/emulator.sh
-index e636aec3..4858d2d4 100755
---- a/scripts/emulator.sh
-+++ b/scripts/emulator.sh
-@@ -36,7 +36,7 @@ if [ -z "$FIRST_STAGE" ]; then
-   export ASH_STANDALONE=1
-   if [ $(./busybox id -u) -ne 0 ]; then
-     # Re-exec script with root
--    exec /system/xbin/su 0 ./busybox sh $0
-+    exec /system/xbin/su -c "nohup ./busybox sh $0&"
-   else
-     # Re-exec script with busybox
-     exec ./busybox sh $0
-@@ -59,7 +59,6 @@ done
- 
- # Stop zygote (and previous setup if exists)
- magisk --stop 2>/dev/null
--stop
- if [ -d /dev/avd-magisk ]; then
-   umount -l /dev/avd-magisk 2>/dev/null
-   rm -rf /dev/avd-magisk 2>/dev/null
-@@ -74,6 +73,9 @@ elif [ -f /sepolicy ]; then
- else
-   ./magiskpolicy --live --magisk 2>&1
- fi
-+echo -n "u:r:magisk:s0" > /proc/$$/attr/current
-+setenforce 1
-+stop
- 
- MAGISKTMP=/sbin
- 
+ def patch_avd_ramdisk(args):
