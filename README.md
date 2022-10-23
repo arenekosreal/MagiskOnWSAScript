@@ -1,5 +1,7 @@
 # Magisk On WSA
 
+__DEPRECATED__: Use LSPosed's version instead: https://github.com/LSPosed/MagiskOnWSALocal
+
 ## What is this?  
 
 A script to compile Magisk and Riru module for using LSPosed on WSA
